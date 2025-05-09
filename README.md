@@ -50,11 +50,10 @@ final-project-dsp/
 
 ## Tim Pengembang
 - Alfajar - 122140122 
-- [Nama Anggota 2] - [NIM] 
-- [Nama Anggota 3] - [NIM] 
+- Ikhsannudin Lathief - 122140137 
+- Muhammad Ghiffari Iskandar - 122140122
 
 ## Dosen Pengampu
-- [Nama Dosen]
+- Martin Clinton Tosima Manullang, Ph.D
 
 ## Lisensi
-[Jenis Lisensi] - Lihat file LICENSE untuk detail lebih lanjut.
