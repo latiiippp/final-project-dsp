@@ -7,15 +7,6 @@ def start_webcam(camera_id=1):
     Args:
         camera_id: ID of the camera to use (default is 1)
     """
-    # Flag to track if window should close
-    window_closed = False
-    
-    # Callback function for window events
-    def on_window_close(event, x, y, flags, param):
-        nonlocal window_closed
-        if event == cv2.EVENT_WINDOWCLOSED:
-            window_closed = True
-    
     # Initialize webcam
     cap = cv2.VideoCapture(camera_id)
     
@@ -41,11 +32,8 @@ def start_webcam(camera_id=1):
     window_name = 'Webcam'
     cv2.namedWindow(window_name)
     
-    # Set mouse callback to detect window close
-    cv2.setMouseCallback(window_name, on_window_close)
-    
     # Main loop
-    while not window_closed:
+    while True:
         # Capture frame-by-frame
         ret, frame = cap.read()
         
@@ -54,10 +42,13 @@ def start_webcam(camera_id=1):
             print("Error: Failed to capture image.")
             break
             
+        # Mirror the frame horizontally (flip around y-axis)
+        frame = cv2.flip(frame, 1)
+            
         # Display the frame
         cv2.imshow(window_name, frame)
         
-        # Alternative way to check if window was closed
+        # Check if window was closed
         if cv2.getWindowProperty(window_name, cv2.WND_PROP_VISIBLE) < 1:
             break
         
