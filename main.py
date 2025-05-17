@@ -1,9 +1,8 @@
 import cv2
-import mediapipe as mp
 
-def start_webcam(camera_id=0):
+def start_webcam(camera_id=1):
     """
-    Start webcam capture with face tracking using MediaPipe.
+    Start webcam capture and display in a window.
     
     Args:
         camera_id: ID of the camera to use (default is 1)
@@ -21,7 +20,7 @@ def start_webcam(camera_id=0):
         print("Error: Could not open webcam.")
         return
     
-    # Get actual resolution
+    # Get actual resolution (may differ from requested if camera doesn't support it)
     actual_width = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
     actual_height = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
     actual_fps = cap.get(cv2.CAP_PROP_FPS)
@@ -29,49 +28,22 @@ def start_webcam(camera_id=0):
     print(f"Webcam detected. Resolution: {int(actual_width)}x{int(actual_height)} at {int(actual_fps)} fps")
     print("Press 'q' to quit or close the window.")
     
-    # Initialize MediaPipe Face Detection
-    mp_face_detection = mp.solutions.face_detection
-    mp_drawing = mp.solutions.drawing_utils
-    face_detection = mp_face_detection.FaceDetection(min_detection_confidence=0.5)
-    
     # Create window
-    window_name = 'Webcam Face Tracking'
+    window_name = 'Webcam'
     cv2.namedWindow(window_name)
     
     # Main loop
     while True:
-        # Capture frame-by-frame
-        ret, frame = cap.read()
-        
-        # If frame is read correctly, ret is True
-        if not ret:
-            print("Error: Failed to capture image.")
-            break
+        try:
+            # Get and process frame
+            frames = webcam.read()
+            
+            if frames is None:
+                print("Failed to grab frame")
+                break
             
         # Mirror the frame horizontally (flip around y-axis)
         frame = cv2.flip(frame, 1)
-        
-        # Convert the BGR image to RGB for MediaPipe
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        
-        # Process the frame and detect faces
-        results = face_detection.process(rgb_frame)
-        
-        # Draw face detections
-        if results.detections:
-            for detection in results.detections:
-                # Draw detection box
-                mp_drawing.draw_detection(frame, detection)
-                
-                # Get bounding box coordinates
-                bboxC = detection.location_data.relative_bounding_box
-                ih, iw, _ = frame.shape
-                x, y, w, h = int(bboxC.xmin * iw), int(bboxC.ymin * ih), \
-                             int(bboxC.width * iw), int(bboxC.height * ih)
-                
-                # Draw additional information
-                cv2.putText(frame, f"Face detected", (x, y-10),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
             
         # Display the frame
         cv2.imshow(window_name, frame)
@@ -85,11 +57,8 @@ def start_webcam(camera_id=0):
             break
     
     # Release resources
-    face_detection.close()
     cap.release()
     cv2.destroyAllWindows()
-    print("Webcam closed.")
 
-# Call the function to start webcam
-if __name__ == "__main__":
-    start_webcam()
+if __name__ == '__main__':
+    main()
