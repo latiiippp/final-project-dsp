@@ -36,24 +36,28 @@ def start_webcam(camera_id=1):
     while True:
         try:
             # Get and process frame
-            frames = webcam.read()
+            ret, frame = cap.read()
             
-            if frames is None:
+            if frame is None:
                 print("Failed to grab frame")
                 break
+                
+            # Mirror the frame horizontally (flip around y-axis)
+            frame = cv2.flip(frame, 1)
+                
+            # Display the frame
+            cv2.imshow(window_name, frame)
             
-        # Mirror the frame horizontally (flip around y-axis)
-        frame = cv2.flip(frame, 1)
+            # Check if window was closed
+            if cv2.getWindowProperty(window_name, cv2.WND_PROP_VISIBLE) < 1:
+                break
             
-        # Display the frame
-        cv2.imshow(window_name, frame)
-        
-        # Check if window was closed
-        if cv2.getWindowProperty(window_name, cv2.WND_PROP_VISIBLE) < 1:
-            break
-        
-        # Exit on 'q' key press
-        if cv2.waitKey(1) & 0xFF == ord('q'):
+            # Exit on 'q' key press
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
+                
+        except Exception as e:
+            print(f"Error: {e}")
             break
     
     # Release resources
@@ -61,4 +65,4 @@ def start_webcam(camera_id=1):
     cv2.destroyAllWindows()
 
 if __name__ == '__main__':
-    main()
+    start_webcam()
