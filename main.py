@@ -65,6 +65,65 @@ def get_roi_for_optical_flow_from_snippet_logic(image_for_roi, pose_landmarker_o
     if (right_x_roi - left_x_roi) <= 10 or (bottom_y_roi - top_y_roi) <= 10: return None
     return (left_x_roi, top_y_roi, right_x_roi, bottom_y_roi)
 
+# Fungsi baru untuk deteksi ROI bahu secara spesifik untuk optical flow
+def get_shoulder_roi_for_optical_flow(image_for_roi, pose_landmarker_obj, shoulder_width=60, shoulder_height=40):
+    """
+    Mendeteksi ROI bahu kiri dan kanan untuk algoritma Lucas-Kanade Optical Flow.
+    
+    Args:
+        image_for_roi: Frame gambar untuk deteksi
+        pose_landmarker_obj: MediaPipe Pose Landmarker object
+        shoulder_width: Lebar area ROI untuk setiap bahu (default: 60)
+        shoulder_height: Tinggi area ROI untuk setiap bahu (default: 40)
+    
+    Returns:
+        Tuple of (left_shoulder_roi, right_shoulder_roi) dimana masing-masing adalah (x1, y1, x2, y2)
+        atau (None, None) jika deteksi gagal
+    """
+    image_rgb = cv2.cvtColor(image_for_roi, cv2.COLOR_BGR2RGB)
+    height, width = image_for_roi.shape[:2]
+    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=image_rgb)
+    detection_result = pose_landmarker_obj.detect(mp_image)
+    
+    if not detection_result.pose_landmarks:
+        return None, None
+    
+    landmarks = detection_result.pose_landmarks[0]
+    # Landmark 11: Left Shoulder, Landmark 12: Right Shoulder
+    left_shoulder, right_shoulder = landmarks[11], landmarks[12]
+    
+    # Periksa visibilitas
+    if left_shoulder.visibility < 0.5 or right_shoulder.visibility < 0.5:
+        return None, None
+    
+    # Konversi koordinat landmark ke pixel
+    left_shoulder_x = int(left_shoulder.x * width)
+    left_shoulder_y = int(left_shoulder.y * height)
+    right_shoulder_x = int(right_shoulder.x * width)
+    right_shoulder_y = int(right_shoulder.y * height)
+    
+    # Tentukan ROI untuk bahu kiri
+    left_x1 = max(0, left_shoulder_x - shoulder_width//2)
+    left_y1 = max(0, left_shoulder_y - shoulder_height//2)
+    left_x2 = min(width, left_shoulder_x + shoulder_width//2)
+    left_y2 = min(height, left_shoulder_y + shoulder_height//2)
+    
+    # Tentukan ROI untuk bahu kanan
+    right_x1 = max(0, right_shoulder_x - shoulder_width//2)
+    right_y1 = max(0, right_shoulder_y - shoulder_height//2)
+    right_x2 = min(width, right_shoulder_x + shoulder_width//2)
+    right_y2 = min(height, right_shoulder_y + shoulder_height//2)
+    
+    # Validasi ukuran ROI
+    if ((left_x2 - left_x1) <= 10 or (left_y2 - left_y1) <= 10 or
+        (right_x2 - right_x1) <= 10 or (right_y2 - right_y1) <= 10):
+        return None, None
+    
+    left_shoulder_roi = (left_x1, left_y1, left_x2, left_y2)
+    right_shoulder_roi = (right_x1, right_y1, right_x2, right_y2)
+    
+    return left_shoulder_roi, right_shoulder_roi
+
 def initialize_optical_flow_features_from_snippet_logic(frame_for_of, pose_landmarker_obj, lk_params_dict):
     roi_coords = get_roi_for_optical_flow_from_snippet_logic(frame_for_of, pose_landmarker_obj)
     if roi_coords is None: return None, None, None
@@ -79,8 +138,71 @@ def initialize_optical_flow_features_from_snippet_logic(frame_for_of, pose_landm
     features_to_track[:,:,1] += t_y 
     return features_to_track, gray_frame_for_of.copy(), roi_coords
 
+def initialize_shoulder_optical_flow_features(frame_for_of, pose_landmarker_obj, lk_params_dict):
+    """
+    Menginisialisasi fitur optical flow pada area bahu untuk algoritma Lucas-Kanade.
+    
+    Args:
+        frame_for_of: Frame gambar untuk inisialisasi
+        pose_landmarker_obj: MediaPipe Pose Landmarker object
+        lk_params_dict: Parameter untuk algoritma Lucas-Kanade
+    
+    Returns:
+        Tuple (features_to_track, gray_frame, shoulder_rois, valid_shoulders)
+        - features_to_track: Array fitur untuk ditelusuri
+        - gray_frame: Frame grayscale untuk optical flow
+        - shoulder_rois: (roi_left, roi_right) koordinat ROI bahu kiri dan kanan
+        - valid_shoulders: (is_left_valid, is_right_valid) status validitas bahu
+    """
+    left_roi, right_roi = get_shoulder_roi_for_optical_flow(frame_for_of, pose_landmarker_obj)
+    if left_roi is None and right_roi is None:
+        return None, None, (None, None), (False, False)
+    
+    gray_frame_for_of = cv2.cvtColor(frame_for_of, cv2.COLOR_BGR2GRAY)
+    combined_features = []
+    valid_shoulders = [False, False]  # [left_valid, right_valid]
+    
+    # Proses bahu kiri jika terdeteksi
+    if left_roi is not None:
+        l_x, l_y, r_x, r_y = left_roi
+        left_roi_gray = gray_frame_for_of[l_y:r_y, l_x:r_x]
+        if left_roi_gray.size > 0 and left_roi_gray.shape[0] >= 5 and left_roi_gray.shape[1] >= 5:
+            left_features = cv2.goodFeaturesToTrack(
+                left_roi_gray, maxCorners=25, qualityLevel=0.2, minDistance=3, blockSize=3
+            )
+            if left_features is not None:
+                left_features = np.float32(left_features)
+                left_features[:,:,0] += l_x
+                left_features[:,:,1] += l_y
+                combined_features.append(left_features)
+                valid_shoulders[0] = True
+    
+    # Proses bahu kanan jika terdeteksi
+    if right_roi is not None:
+        l_x, l_y, r_x, r_y = right_roi
+        right_roi_gray = gray_frame_for_of[l_y:r_y, l_x:r_x]
+        if right_roi_gray.size > 0 and right_roi_gray.shape[0] >= 5 and right_roi_gray.shape[1] >= 5:
+            right_features = cv2.goodFeaturesToTrack(
+                right_roi_gray, maxCorners=25, qualityLevel=0.2, minDistance=3, blockSize=3
+            )
+            if right_features is not None:
+                right_features = np.float32(right_features)
+                right_features[:,:,0] += l_x
+                right_features[:,:,1] += l_y
+                combined_features.append(right_features)
+                valid_shoulders[1] = True
+    
+    # Jika tidak ada bahu yang valid, return None
+    if not combined_features:
+        return None, None, (left_roi, right_roi), (False, False)
+    
+    # Gabungkan semua fitur yang terdeteksi
+    all_features = np.vstack(combined_features)
+    
+    return all_features, gray_frame_for_of.copy(), (left_roi, right_roi), tuple(valid_shoulders)
+
 # --- Initialization Functions ---
-def initialize_camera_and_parameters(camera_id=0):
+def initialize_camera_and_parameters(camera_id=2):
     cap = cv2.VideoCapture(camera_id)
     if not cap.isOpened():
         print(f"Error: Could not open webcam (ID: {camera_id}).")
@@ -145,17 +267,26 @@ def initialize_buffers_and_state(fs):
     buffers['rppg_pos_display_buffer'] = collections.deque(maxlen=buffers['pos_display_buffer_size'])
     buffers['pos_lowcut_hr']=0.75; buffers['pos_highcut_hr']=3.0; buffers['pos_filter_order']=3
     buffers['min_frames_for_pos_output'] = int(1.6*fs) + int(fs*1)
-    buffers['current_hr'] = 0.0
-
-    # Respiration
+    buffers['current_hr'] = 0.0    # Respiration - menggunakan algoritma Lucas-Kanade untuk tracking pergerakan bahu
+    # Parameter untuk algoritma Lucas-Kanade
     buffers['lk_params_of'] = dict(winSize=(15,15), maxLevel=2, criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 10, 0.03))
-    buffers['features_of'] = None
-    buffers['old_gray_of'] = None
-    buffers['roi_coords_of'] = None # This was for OF init visualization, might be handled differently
+    
+    # Variabel untuk tracking bahu
+    buffers['features_of'] = None  # Fitur yang dilacak
+    buffers['old_gray_of'] = None  # Frame grayscale sebelumnya
+    buffers['roi_coords_of'] = None  # (left_roi, right_roi) koordinat ROI bahu kiri dan kanan
+    buffers['valid_shoulders'] = (False, False)  # Status validitas bahu (left_valid, right_valid)
+    
+    # Buffer untuk sinyal respirasi
     buffers['respiration_of_raw_signal_list'] = collections.deque(maxlen=int(fs*20))
-    buffers['collected_respiration_of_timestamps'] = [] # Changed to list
+    buffers['collected_respiration_of_timestamps'] = []  # Menyimpan timestamp
     buffers['respiration_filtered_display_buffer'] = collections.deque(maxlen=buffers['pos_display_buffer_size'])
-    buffers['resp_lowcut_hz']=0.1; buffers['resp_highcut_hz']=0.5; buffers['resp_filter_order']=2
+    
+    # Parameter filter dan deteksi respirasi
+    # Frekuensi cutoff: 0.1-0.5 Hz sesuai dengan 6-30 respirasi/menit
+    buffers['resp_lowcut_hz']=0.1
+    buffers['resp_highcut_hz']=0.5
+    buffers['resp_filter_order']=2
     buffers['min_frames_for_resp_output'] = int(fs*5)
     buffers['current_rpm'] = 0.0
     return buffers
@@ -269,71 +400,172 @@ def process_respiration_frame(frame_orig_for_pose_of, pose_landmarker_obj, buffe
 
     frame_for_of_processing = cv2.resize(frame_orig_for_pose_of, STANDARD_SIZE_OF_FOR_OPTICAL_FLOW)
     
-    # Manage features_of and old_gray_of (passed in buffers dict)
-    if buffers['features_of'] is None or len(buffers['features_of']) < 10 : 
-        if frame_count > 1 : cv2.putText(display_config['resp_raw_g'],"Re-Init OF Feat.",(10,display_config['graph_height']//2-10),cv2.FONT_HERSHEY_SIMPLEX,0.4,display_config['graph_text_color'],1)
-        buffers['features_of'], buffers['old_gray_of'], buffers['roi_coords_of'] = initialize_optical_flow_features_from_snippet_logic(frame_for_of_processing, pose_landmarker_obj, buffers['lk_params_of'])
-        if buffers['features_of'] is None: cv2.putText(display_config['resp_raw_g'],"OF Init Failed",(10,display_config['graph_height']//2),cv2.FONT_HERSHEY_SIMPLEX,0.4,display_config['graph_text_color'],1)
-        else: cv2.putText(display_config['resp_raw_g'],"OF Feat. OK",(10,display_config['graph_height']//2),cv2.FONT_HERSHEY_SIMPLEX,0.4,display_config['graph_text_color'],1)
+    # Manage features_of dan old_gray_of untuk deteksi pergerakan bahu
+    if buffers['features_of'] is None or len(buffers['features_of']) < 10:
+        if frame_count > 1:
+            cv2.putText(display_config['resp_raw_g'], "Re-Init Shoulders", (10, display_config['graph_height']//2-10), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.4, display_config['graph_text_color'], 1)
+        
+        # Gunakan fungsi baru untuk melacak bahu
+        features, gray_frame, shoulder_rois, valid_shoulders = initialize_shoulder_optical_flow_features(
+            frame_for_of_processing, pose_landmarker_obj, buffers['lk_params_of']
+        )
+        
+        buffers['features_of'] = features
+        buffers['old_gray_of'] = gray_frame
+        buffers['roi_coords_of'] = shoulder_rois  # Sekarang berisi (left_roi, right_roi)
+        buffers['valid_shoulders'] = valid_shoulders  # Status validitas bahu (left_valid, right_valid)
+        
+        if buffers['features_of'] is None:
+            cv2.putText(display_config['resp_raw_g'], "Shoulder Track Failed", (10, display_config['graph_height']//2),
+                      cv2.FONT_HERSHEY_SIMPLEX, 0.4, display_config['graph_text_color'], 1)
+        else:
+            cv2.putText(display_config['resp_raw_g'], "Shoulder Track OK", (10, display_config['graph_height']//2),
+                      cv2.FONT_HERSHEY_SIMPLEX, 0.4, display_config['graph_text_color'], 1)
 
-    if buffers['features_of'] is not None and buffers['old_gray_of'] is not None: 
+    if buffers['features_of'] is not None and buffers['old_gray_of'] is not None:
         frame_gray_of_processing = cv2.cvtColor(frame_for_of_processing, cv2.COLOR_BGR2GRAY)
-        new_features, status, error = cv2.calcOpticalFlowPyrLK(buffers['old_gray_of'], frame_gray_of_processing, buffers['features_of'], None, **buffers['lk_params_of'])
+        new_features, status, error = cv2.calcOpticalFlowPyrLK(buffers['old_gray_of'], frame_gray_of_processing, 
+                                                              buffers['features_of'], None, **buffers['lk_params_of'])
         good_new = []
-        if new_features is not None and status is not None: good_new = new_features[status.flatten() == 1]
+        if new_features is not None and status is not None:
+            good_new = new_features[status.flatten() == 1]
         
-        # Draw OF ROI and features
-        if buffers['roi_coords_of']: 
-            l,t,r,b = buffers['roi_coords_of'] 
-            scale_x_of_to_disp = display_config['display_camera_portion_w'] / STANDARD_SIZE_OF_FOR_OPTICAL_FLOW[0]
-            scale_y_of_to_disp = display_config['display_camera_h'] / STANDARD_SIZE_OF_FOR_OPTICAL_FLOW[1]
-            l_d, t_d = int(l * scale_x_of_to_disp), int(t * scale_y_of_to_disp)
-            r_d, b_d = int(r * scale_x_of_to_disp), int(b * scale_y_of_to_disp)
-            cv2.rectangle(resized_frame_display, (display_config['display_camera_portion_w'] - r_d, t_d), (display_config['display_camera_portion_w'] - l_d, b_d), (0,255,0),1)
-        for pt_new_abs in good_new: 
+        # Gambar ROI dan fitur bahu
+        left_roi, right_roi = buffers['roi_coords_of'] if isinstance(buffers['roi_coords_of'], tuple) else (None, None)
+        
+        # Faktor skala untuk menampilkan ROI pada frame yang ditampilkan
+        scale_x_of_to_disp = display_config['display_camera_portion_w'] / STANDARD_SIZE_OF_FOR_OPTICAL_FLOW[0]
+        scale_y_of_to_disp = display_config['display_camera_h'] / STANDARD_SIZE_OF_FOR_OPTICAL_FLOW[1]
+        
+        # Gambar ROI bahu kiri (jika valid)
+        if left_roi:
+            l_x, l_y, r_x, r_y = left_roi
+            l_d = int(l_x * scale_x_of_to_disp)
+            t_d = int(l_y * scale_y_of_to_disp)
+            r_d = int(r_x * scale_x_of_to_disp)
+            b_d = int(r_y * scale_y_of_to_disp)
+            cv2.rectangle(resized_frame_display, 
+                         (display_config['display_camera_portion_w'] - r_d, t_d), 
+                         (display_config['display_camera_portion_w'] - l_d, b_d), 
+                         (0, 255, 0), 1)
+            cv2.putText(resized_frame_display, "L", 
+                       (display_config['display_camera_portion_w'] - r_d + 5, t_d + 15), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+        
+        # Gambar ROI bahu kanan (jika valid)
+        if right_roi:
+            l_x, l_y, r_x, r_y = right_roi
+            l_d = int(l_x * scale_x_of_to_disp)
+            t_d = int(l_y * scale_y_of_to_disp)
+            r_d = int(r_x * scale_x_of_to_disp)
+            b_d = int(r_y * scale_y_of_to_disp)
+            cv2.rectangle(resized_frame_display, 
+                         (display_config['display_camera_portion_w'] - r_d, t_d), 
+                         (display_config['display_camera_portion_w'] - l_d, b_d), 
+                         (0, 255, 255), 1)
+            cv2.putText(resized_frame_display, "R", 
+                       (display_config['display_camera_portion_w'] - r_d + 5, t_d + 15), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+        
+        # Gambar fitur yang dilacak
+        for pt_new_abs in good_new:
             x_abs_std, y_abs_std = pt_new_abs.ravel()
-            disp_x_on_resized = int(x_abs_std * (display_config['display_camera_portion_w'] / STANDARD_SIZE_OF_FOR_OPTICAL_FLOW[0]))
-            disp_y_on_resized = int(y_abs_std * (display_config['display_camera_h'] / STANDARD_SIZE_OF_FOR_OPTICAL_FLOW[1]))
-            cv2.circle(resized_frame_display, (display_config['display_camera_portion_w'] - disp_x_on_resized, disp_y_on_resized), 2, (0,255,0), -1)
+            disp_x_on_resized = int(x_abs_std * scale_x_of_to_disp)
+            disp_y_on_resized = int(y_abs_std * scale_y_of_to_disp)
+            cv2.circle(resized_frame_display, 
+                      (display_config['display_camera_portion_w'] - disp_x_on_resized, disp_y_on_resized), 
+                      2, (0, 255, 0), -1)
         
-        if len(good_new) > 5: 
+        if len(good_new) > 5:
+            # Hitung rata-rata posisi y dari fitur sebagai sinyal respirasi
             avg_y_of = np.mean(good_new[:, 0, 1])
             buffers['respiration_of_raw_signal_list'].append(avg_y_of)
             buffers['collected_respiration_of_timestamps'].append(current_time_from_start)
-            buffers['features_of'] = good_new.reshape(-1, 1, 2) 
+            buffers['features_of'] = good_new.reshape(-1, 1, 2)
             buffers['old_gray_of'] = frame_gray_of_processing.copy()
-        else: 
-            buffers['features_of'] = None 
-            if buffers['old_gray_of'] is not None: cv2.putText(display_config['resp_raw_g'],"OF Track Lost",(10,display_config['graph_height']//2+10),cv2.FONT_HERSHEY_SIMPLEX,0.4,display_config['graph_text_color'],1)
-    
-    # RPM calculation and graph drawing
+        else:
+            buffers['features_of'] = None
+            if buffers['old_gray_of'] is not None:
+                cv2.putText(display_config['resp_raw_g'], "OF Track Lost", (10, display_config['graph_height']//2+10),
+                          cv2.FONT_HERSHEY_SIMPLEX, 0.4, display_config['graph_text_color'], 1)
+      # RPM calculation and graph drawing
     buffers['current_rpm'] = 0.0 # Reset for this frame
     if len(buffers['respiration_of_raw_signal_list']) >= buffers['min_frames_for_resp_output']:
         resp_seg_of = np.array(list(buffers['respiration_of_raw_signal_list'])[-buffers['pos_display_buffer_size']:]) # Use consistent display length
         if len(resp_seg_of) > int(fs*2): 
+            # Detren sinyal untuk menghilangkan drift jangka panjang
             det_resp_of = signal.detrend(resp_seg_of)
+            
+            # Filter sinyal untuk memperoleh sinyal pernafasan
+            # Frekuensi pernafasan normal: 0.1 - 0.5 Hz (6-30 respirasi per menit)
             nyq_r,low_r,high_r = 0.5*fs, buffers['resp_lowcut_hz']/(0.5*fs), buffers['resp_highcut_hz']/(0.5*fs)
             if low_r>0 and high_r<1 and low_r<high_r:
+                # Butterworth bandpass filter
                 br,ar = signal.butter(buffers['resp_filter_order'], [low_r,high_r], btype='band')
                 filt_resp_of = signal.filtfilt(br,ar,det_resp_of)
-                buffers['respiration_filtered_display_buffer'].clear(); buffers['respiration_filtered_display_buffer'].extend(filt_resp_of)
-                peaks_r,_ = signal.find_peaks((filt_resp_of-np.mean(filt_resp_of))/(np.std(filt_resp_of)+eps), prominence=0.35, distance=fs/(buffers['resp_highcut_hz']*2.5)) 
-                if len(peaks_r)>=2: buffers['current_rpm'] = np.clip(60.0/(np.mean(np.diff(peaks_r))/fs), 4, 30)
+                
+                # Menyimpan sinyal yang difilter untuk ditampilkan
+                buffers['respiration_filtered_display_buffer'].clear()
+                buffers['respiration_filtered_display_buffer'].extend(filt_resp_of)
+                
+                # Mendeteksi puncak untuk menghitung laju pernapasan
+                # Normalisasi sinyal untuk deteksi puncak yang lebih konsisten
+                norm_sig = (filt_resp_of-np.mean(filt_resp_of))/(np.std(filt_resp_of)+eps)
+                
+                # Parameter prominence mengontrol seberapa menonjol suatu puncak
+                # Distance memastikan jarak minimum antar puncak sesuai dengan frekuensi pernapasan maksimum
+                peaks_r,_ = signal.find_peaks(norm_sig, prominence=0.35, distance=fs/(buffers['resp_highcut_hz']*2.5)) 
+                
+                # Hitung respirasi per menit (RPM) dari interval antar puncak
+                if len(peaks_r)>=2: 
+                    mean_period = np.mean(np.diff(peaks_r))/fs  # periode rata-rata dalam detik
+                    buffers['current_rpm'] = np.clip(60.0/mean_period, 4, 30)  # konversi ke RPM dan batasi nilai
+                
+                # Visualisasi sinyal yang difilter
                 if len(buffers['respiration_filtered_display_buffer'])>1:
                     data_plot = np.array(list(buffers['respiration_filtered_display_buffer']))
                     min_v,max_v=np.min(data_plot),np.max(data_plot)
                     if max_v-min_v > eps:
-                        norm_disp=(data_plot-min_v)/(max_v-min_v); pts=min(display_config['graph_width'],len(norm_disp))
-                        for i in range(1,pts): cv2.line(display_config['resp_filt_g'],(i-1,display_config['graph_height']-int(norm_disp[i-1]*display_config['graph_height'])),(i,display_config['graph_height']-int(norm_disp[i]*display_config['graph_height'])),(0,100,0),1)
-        if len(buffers['respiration_of_raw_signal_list'])>1: # Plot raw signal for display
+                        norm_disp=(data_plot-min_v)/(max_v-min_v)
+                        pts=min(display_config['graph_width'],len(norm_disp))
+                        # Gambar sinyal yang difilter dengan warna hijau
+                        for i in range(1,pts): 
+                            cv2.line(display_config['resp_filt_g'],
+                                   (i-1,display_config['graph_height']-int(norm_disp[i-1]*display_config['graph_height'])),
+                                   (i,display_config['graph_height']-int(norm_disp[i]*display_config['graph_height'])),
+                                   (0,100,0),1)        # Plot sinyal bahu mentah untuk tampilan
+        if len(buffers['respiration_of_raw_signal_list'])>1:
             data_plot_raw = np.array(list(buffers['respiration_of_raw_signal_list'])[-buffers['pos_display_buffer_size']:])
             min_v,max_v=np.min(data_plot_raw),np.max(data_plot_raw)
             if max_v-min_v > eps:
-                norm_disp=(data_plot_raw-min_v)/(max_v-min_v); pts=min(display_config['graph_width'],len(norm_disp))
-                for i in range(1,pts): cv2.line(display_config['resp_raw_g'],(i-1,display_config['graph_height']-int(norm_disp[i-1]*display_config['graph_height'])),(i,display_config['graph_height']-int(norm_disp[i]*display_config['graph_height'])),(0,0,255),1)
-    elif buffers['features_of'] is not None : cv2.putText(display_config['resp_raw_g'],"Collecting OF...",(10,display_config['graph_height']//2),cv2.FONT_HERSHEY_SIMPLEX,0.4,display_config['graph_text_color'],1)
-    elif buffers['features_of'] is None and buffers['old_gray_of'] is not None: pass 
-    else: cv2.putText(display_config['resp_raw_g'],"Waiting OF Init",(10,display_config['graph_height']//2),cv2.FONT_HERSHEY_SIMPLEX,0.4,display_config['graph_text_color'],1)
+                norm_disp=(data_plot_raw-min_v)/(max_v-min_v)
+                pts=min(display_config['graph_width'],len(norm_disp))
+                # Gambar sinyal mentah dengan warna biru
+                for i in range(1,pts): 
+                    cv2.line(display_config['resp_raw_g'],
+                           (i-1,display_config['graph_height']-int(norm_disp[i-1]*display_config['graph_height'])),
+                           (i,display_config['graph_height']-int(norm_disp[i]*display_config['graph_height'])),
+                           (0,0,255),1)
+                
+                # Tambahkan teks informasi RPM pada grafik
+                if buffers['current_rpm'] > 0:
+                    rpm_text = f"RPM: {buffers['current_rpm']:.1f}"
+                    cv2.putText(display_config['resp_filt_g'], rpm_text,
+                              (display_config['graph_width']-100, 20),
+                              cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,100,0), 1)
+    
+    # Tampilkan status jika fitur pelacakan belum siap
+    elif buffers['features_of'] is not None:
+        cv2.putText(display_config['resp_raw_g'], "Collecting Shoulder Movement...",
+                   (10, display_config['graph_height']//2),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, display_config['graph_text_color'], 1)
+    elif buffers['features_of'] is None and buffers['old_gray_of'] is not None:
+        pass
+    else:
+        cv2.putText(display_config['resp_raw_g'], "Waiting Shoulder Detection...",
+                   (10, display_config['graph_height']//2),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, display_config['graph_text_color'], 1)
     
     return buffers['current_rpm'], resized_frame_display
 
@@ -415,30 +647,67 @@ def generate_final_plots(buffers, cam_params, display_config):
         else:
             plt.subplot(212);plt.plot(times_rppg_full, det_pos_full, label="Detrended POS (Filter Error)", color='red'); plt.title("Detrended POS Signal")
         plt.xlabel("Time (s)"); plt.ylabel("Amplitude"); plt.legend(); plt.grid(True)
-        plt.tight_layout(rect=[0,0,1,0.95]); plt.savefig("final_rppg_plot_webcam.png"); plt.show(block=False)
-
-    # Respiration Plot
+        plt.tight_layout(rect=[0,0,1,0.95]); plt.savefig("final_rppg_plot_webcam.png"); plt.show(block=False)    # Respiration Plot - tracking pergerakan bahu
     if len(buffers['respiration_of_raw_signal_list']) > buffers['min_frames_for_resp_output']:
-        print("Plotting final Respiration (OF) signals...")
+        print("Plotting final Respiration (Shoulder Movement) signals...")
         final_resp_of_full = np.array(list(buffers['respiration_of_raw_signal_list']))
         times_resp_full = np.array(buffers['collected_respiration_of_timestamps'][:len(final_resp_of_full)])
         
-        plt.figure(figsize=(15,8)); plt.suptitle("Respiration (Optical Flow) Full Session Analysis", fontsize=14)
-        plt.subplot(211); plt.plot(times_resp_full, final_resp_of_full, color='r', label="Raw OF Y-avg"); plt.title("Raw Respiration Signal (OF)"); plt.xlabel("Time (s)"); plt.ylabel("Avg. Y Pixel Pos"); plt.legend(); plt.grid(True)
+        plt.figure(figsize=(15,8))
+        plt.suptitle("Respiration from Shoulder Movement (Lucas-Kanade Optical Flow) Analysis", fontsize=14)
         
+        # Plot sinyal mentah
+        plt.subplot(211)
+        plt.plot(times_resp_full, final_resp_of_full, color='r', label="Raw Shoulder Movement")
+        plt.title("Raw Respiration Signal from Shoulder Movement")
+        plt.xlabel("Time (s)")
+        plt.ylabel("Avg. Y Pixel Position")
+        plt.legend()
+        plt.grid(True)
+        
+        # Plot sinyal yang difilter
         det_resp_full_of = signal.detrend(final_resp_of_full)
         nyq_r,low_r,high_r = 0.5*fs, buffers['resp_lowcut_hz']/(0.5*fs), buffers['resp_highcut_hz']/(0.5*fs)
         if low_r>0 and high_r<1 and low_r<high_r:
             br,ar = signal.butter(buffers['resp_filter_order'], [low_r,high_r], btype='band')
             filt_resp_full_of = signal.filtfilt(br,ar,det_resp_full_of)
-            plt.subplot(212);plt.plot(times_resp_full, filt_resp_full_of, color='g', label=f"Filtered Resp ({buffers['resp_lowcut_hz']}-{buffers['resp_highcut_hz']}Hz)"); plt.title("Filtered Respiration Signal (OF)")
+            
+            # Deteksi puncak untuk menghitung laju pernapasan rata-rata
+            norm_sig = (filt_resp_full_of-np.mean(filt_resp_full_of))/(np.std(filt_resp_full_of)+1e-9)
+            peaks, _ = signal.find_peaks(norm_sig, prominence=0.35, distance=fs/(buffers['resp_highcut_hz']*2.5))
+            
+            plt.subplot(212)
+            plt.plot(times_resp_full, filt_resp_full_of, color='g', 
+                   label=f"Filtered Shoulder Movement ({buffers['resp_lowcut_hz']}-{buffers['resp_highcut_hz']}Hz)")
+            
+            # Plot puncak yang terdeteksi
+            if len(peaks) > 0:
+                plt.plot(times_resp_full[peaks], filt_resp_full_of[peaks], "rx", label="Detected Breaths")
+                
+                # Hitung dan tampilkan laju pernapasan rata-rata
+                if len(peaks) >= 2:
+                    avg_rpm = 60.0 / (np.mean(np.diff(peaks)) / fs)
+                    plt.title(f"Filtered Respiration Signal - Avg. Rate: {avg_rpm:.1f} breaths/min")
+                else:
+                    plt.title("Filtered Respiration Signal (Shoulder Movement)")
+            else:
+                plt.title("Filtered Respiration Signal (Shoulder Movement)")
         else:
-            plt.subplot(212);plt.plot(times_resp_full, det_resp_full_of, color='m', label="Detrended Resp (Filter Error)"); plt.title("Detrended Respiration Signal (OF)")
-        plt.xlabel("Time (s)"); plt.ylabel("Amplitude"); plt.legend(); plt.grid(True)
-        plt.tight_layout(rect=[0,0,1,0.95]); plt.savefig("final_respiration_of_webcam_plot.png"); plt.show(block=True)
+            plt.subplot(212)
+            plt.plot(times_resp_full, det_resp_full_of, color='m', label="Detrended Resp (Filter Error)")
+            plt.title("Detrended Respiration Signal (Shoulder Movement)")
+            
+        plt.xlabel("Time (s)")
+        plt.ylabel("Amplitude")
+        plt.legend()
+        plt.grid(True)
+        
+        plt.tight_layout(rect=[0,0,1,0.95])
+        plt.savefig("final_respiration_shoulder_movement_plot.png")
+        plt.show(block=True)
 
 # --- Main Application Orchestrator ---
-def run_application(camera_id=0):
+def run_application(camera_id=2):
     cap, cam_params = initialize_camera_and_parameters(camera_id)
     if not cap: return
 
