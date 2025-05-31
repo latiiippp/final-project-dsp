@@ -121,7 +121,7 @@ final-project-dsp/
 ## Tim Pengembang
 - Alfajar - 122140122 
 - Ikhsannudin Lathief - 122140137 
-- Muhammad Ghiffari Iskandar - 122140122
+- Muhammad Ghiffari Iskandar - 122140189
 
 ## Dosen Pengampu
 - Martin Clinton Tosima Manullang, Ph.D
