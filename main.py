@@ -345,23 +345,37 @@ def process_rppg_frame(frame_display_orig_size, face_mesh, buffers, cam_params, 
 
     if face_results.multi_face_landmarks:
         face_landmarks = face_results.multi_face_landmarks[0]
+        # Menggunakan landmark wajah untuk menentukan ROI dahi
+        # Landmark yang relevan untuk dahi (contoh, bisa disesuaikan)
+        # 10 (temporal), 152 (glabella), 234 (temporal), 67 (atas hidung kiri), 297 (atas hidung kanan)
+        # Untuk pendekatan yang lebih sederhana, kita bisa menggunakan bounding box wajah dan mengambil bagian atasnya
+        
         face_pts = np.array([[int(lm.x*actual_width), int(lm.y*actual_height)] for lm in face_landmarks.landmark])
         fx_min,fy_min=np.min(face_pts,axis=0); fx_max,fy_max=np.max(face_pts,axis=0)
         fh_w,fh_h = fx_max-fx_min, fy_max-fy_min
+
         if fh_w > 0 and fh_h > 0:
+            # ROI Dahi: Ambil bagian atas dari bounding box wajah
+            # Misalnya, 10% dari atas hingga 25% dari atas, dan 20% dari kiri hingga 80% dari kanan
             forehead_y_s, forehead_y_e = fy_min+int(fh_h*0.1), fy_min+int(fh_h*0.25)
             forehead_x_s, forehead_x_e = fx_min+int(fh_w*0.2), fx_min+int(fh_w*0.8)
-            forehead_roi_disp_orig = frame_display_orig_size[forehead_y_s:forehead_y_e, forehead_x_s:forehead_x_e]
-            if forehead_roi_disp_orig.size > 100: 
-                b,g,r = np.mean(forehead_roi_disp_orig[:,:,0]), np.mean(forehead_roi_disp_orig[:,:,1]), np.mean(forehead_roi_disp_orig[:,:,2])
-                buffers['r_signal_list'].append(r); buffers['g_signal_list'].append(g); buffers['b_signal_list'].append(b)
-                buffers['collected_rppg_timestamps'].append(current_time_from_start)
-                valid_roi_for_rppg = True
-                scale_x_roi_disp = display_config['display_camera_portion_w'] / actual_width
-                scale_y_roi_disp = display_config['display_camera_h'] / actual_height
-                rx_s, ry_s = int(forehead_x_s * scale_x_roi_disp), int(forehead_y_s * scale_y_roi_disp)
-                rx_e, ry_e = int(forehead_x_e * scale_x_roi_disp), int(forehead_y_e * scale_y_roi_disp)
-                cv2.rectangle(resized_frame_display, (rx_s, ry_s), (rx_e, ry_e), (255,0,0),1)
+            
+            # Pastikan ROI valid
+            if forehead_y_s < forehead_y_e and forehead_x_s < forehead_x_e:
+                forehead_roi_disp_orig = frame_display_orig_size[forehead_y_s:forehead_y_e, forehead_x_s:forehead_x_e]
+                
+                if forehead_roi_disp_orig.size > 100: # Pastikan ROI tidak terlalu kecil
+                    b,g,r = np.mean(forehead_roi_disp_orig[:,:,0]), np.mean(forehead_roi_disp_orig[:,:,1]), np.mean(forehead_roi_disp_orig[:,:,2])
+                    buffers['r_signal_list'].append(r); buffers['g_signal_list'].append(g); buffers['b_signal_list'].append(b)
+                    buffers['collected_rppg_timestamps'].append(current_time_from_start)
+                    valid_roi_for_rppg = True
+                    
+                    # Visualisasikan ROI dahi pada frame yang ditampilkan
+                    scale_x_roi_disp = display_config['display_camera_portion_w'] / actual_width
+                    scale_y_roi_disp = display_config['display_camera_h'] / actual_height
+                    rx_s, ry_s = int(forehead_x_s * scale_x_roi_disp), int(forehead_y_s * scale_y_roi_disp)
+                    rx_e, ry_e = int(forehead_x_e * scale_x_roi_disp), int(forehead_y_e * scale_y_roi_disp)
+                    cv2.rectangle(resized_frame_display, (rx_s, ry_s), (rx_e, ry_e), (255,0,0),1)
     
     # Heart rate calculation and graph drawing
     buffers['current_hr'] = 0.0 # Reset for this frame
@@ -377,18 +391,24 @@ def process_rppg_frame(frame_display_orig_size, face_mesh, buffers, cam_params, 
                 if low>0 and high <1 and low < high:
                     bf,af = signal.butter(buffers['pos_filter_order'], [low,high], btype='band')
                     filt_pos = signal.filtfilt(bf,af,det_pos)
-                    peaks,_ = signal.find_peaks((filt_pos-np.mean(filt_pos))/(np.std(filt_pos)+eps), prominence=0.4, distance=fs/(buffers['pos_highcut_hr']*2.0)) 
+                    # Normalisasi sinyal untuk deteksi puncak yang lebih konsisten
+                    norm_filt_pos = (filt_pos-np.mean(filt_pos))/(np.std(filt_pos)+eps)
+                    peaks,_ = signal.find_peaks(norm_filt_pos, prominence=0.4, distance=fs/(buffers['pos_highcut_hr']*2.0)) 
                     if len(peaks)>=2: buffers['current_hr'] = np.clip(60.0/(np.mean(np.diff(peaks))/fs), 35, 180)
+                    
                     min_v,max_v=np.min(filt_pos),np.max(filt_pos)
                     if max_v-min_v > eps:
                         norm_disp=(filt_pos-min_v)/(max_v-min_v); pts=min(display_config['graph_width'],len(norm_disp))
                         for i in range(1,pts): cv2.line(display_config['rppg_filt_g'],(i-1,display_config['graph_height']-int(norm_disp[i-1]*display_config['graph_height'])),(i,display_config['graph_height']-int(norm_disp[i]*display_config['graph_height'])),(0,165,255),1) 
+        
+        # Plot sinyal POS mentah untuk tampilan
         if len(buffers['rppg_pos_display_buffer'])>1:
             raw_plot_data = np.array(list(buffers['rppg_pos_display_buffer']))
             min_v,max_v=np.min(raw_plot_data),np.max(raw_plot_data)
             if max_v-min_v > eps:
                 norm_disp=(raw_plot_data-min_v)/(max_v-min_v); pts=min(display_config['graph_width'],len(norm_disp))
                 for i in range(1,pts): cv2.line(display_config['rppg_raw_g'],(i-1,display_config['graph_height']-int(norm_disp[i-1]*display_config['graph_height'])),(i,display_config['graph_height']-int(norm_disp[i]*display_config['graph_height'])),(255,0,0),1) 
+    
     elif not valid_roi_for_rppg: cv2.putText(display_config['rppg_raw_g'],"No Face ROI",(10,display_config['graph_height']//2),cv2.FONT_HERSHEY_SIMPLEX,0.4,display_config['graph_text_color'],1)
     else: cv2.putText(display_config['rppg_raw_g'],"Buffering RGB...",(10,display_config['graph_height']//2),cv2.FONT_HERSHEY_SIMPLEX,0.4,display_config['graph_text_color'],1)
     
@@ -401,8 +421,8 @@ def process_respiration_frame(frame_orig_for_pose_of, pose_landmarker_obj, buffe
     frame_for_of_processing = cv2.resize(frame_orig_for_pose_of, STANDARD_SIZE_OF_FOR_OPTICAL_FLOW)
     
     # Manage features_of dan old_gray_of untuk deteksi pergerakan bahu
-    if buffers['features_of'] is None or len(buffers['features_of']) < 10:
-        if frame_count > 1:
+    if buffers['features_of'] is None or len(buffers['features_of']) < 10: # Re-initialize if too few features
+        if frame_count > 1: # Avoid message on first frame
             cv2.putText(display_config['resp_raw_g'], "Re-Init Shoulders", (10, display_config['graph_height']//2-10), 
                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, display_config['graph_text_color'], 1)
         
@@ -431,19 +451,20 @@ def process_respiration_frame(frame_orig_for_pose_of, pose_landmarker_obj, buffe
             good_new = new_features[status.flatten() == 1]
         
         # Gambar ROI dan fitur bahu
-        left_roi, right_roi = buffers['roi_coords_of'] if isinstance(buffers['roi_coords_of'], tuple) else (None, None)
+        left_roi, right_roi = buffers['roi_coords_of'] if isinstance(buffers['roi_coords_of'], tuple) and len(buffers['roi_coords_of']) == 2 else (None, None)
         
         # Faktor skala untuk menampilkan ROI pada frame yang ditampilkan
         scale_x_of_to_disp = display_config['display_camera_portion_w'] / STANDARD_SIZE_OF_FOR_OPTICAL_FLOW[0]
         scale_y_of_to_disp = display_config['display_camera_h'] / STANDARD_SIZE_OF_FOR_OPTICAL_FLOW[1]
         
         # Gambar ROI bahu kiri (jika valid)
-        if left_roi:
+        if left_roi and buffers['valid_shoulders'][0]:
             l_x, l_y, r_x, r_y = left_roi
             l_d = int(l_x * scale_x_of_to_disp)
             t_d = int(l_y * scale_y_of_to_disp)
             r_d = int(r_x * scale_x_of_to_disp)
             b_d = int(r_y * scale_y_of_to_disp)
+            # Flip horizontal untuk ROI kiri karena frame kamera di-flip
             cv2.rectangle(resized_frame_display, 
                          (display_config['display_camera_portion_w'] - r_d, t_d), 
                          (display_config['display_camera_portion_w'] - l_d, b_d), 
@@ -453,21 +474,22 @@ def process_respiration_frame(frame_orig_for_pose_of, pose_landmarker_obj, buffe
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
         
         # Gambar ROI bahu kanan (jika valid)
-        if right_roi:
+        if right_roi and buffers['valid_shoulders'][1]:
             l_x, l_y, r_x, r_y = right_roi
             l_d = int(l_x * scale_x_of_to_disp)
             t_d = int(l_y * scale_y_of_to_disp)
             r_d = int(r_x * scale_x_of_to_disp)
             b_d = int(r_y * scale_y_of_to_disp)
+            # Flip horizontal untuk ROI kanan
             cv2.rectangle(resized_frame_display, 
                          (display_config['display_camera_portion_w'] - r_d, t_d), 
                          (display_config['display_camera_portion_w'] - l_d, b_d), 
-                         (0, 255, 255), 1)
+                         (0, 255, 255), 1) # Warna beda untuk kanan
             cv2.putText(resized_frame_display, "R", 
                        (display_config['display_camera_portion_w'] - r_d + 5, t_d + 15), 
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
         
-        # Gambar fitur yang dilacak
+        # Gambar fitur yang dilacak (juga di-flip horizontal)
         for pt_new_abs in good_new:
             x_abs_std, y_abs_std = pt_new_abs.ravel()
             disp_x_on_resized = int(x_abs_std * scale_x_of_to_disp)
@@ -476,31 +498,34 @@ def process_respiration_frame(frame_orig_for_pose_of, pose_landmarker_obj, buffe
                       (display_config['display_camera_portion_w'] - disp_x_on_resized, disp_y_on_resized), 
                       2, (0, 255, 0), -1)
         
-        if len(good_new) > 5:
+        if len(good_new) > 5: # Butuh minimal beberapa fitur untuk sinyal yang berarti
             # Hitung rata-rata posisi y dari fitur sebagai sinyal respirasi
             avg_y_of = np.mean(good_new[:, 0, 1])
             buffers['respiration_of_raw_signal_list'].append(avg_y_of)
             buffers['collected_respiration_of_timestamps'].append(current_time_from_start)
-            buffers['features_of'] = good_new.reshape(-1, 1, 2)
+            buffers['features_of'] = good_new.reshape(-1, 1, 2) # Update fitur untuk frame berikutnya
             buffers['old_gray_of'] = frame_gray_of_processing.copy()
         else:
-            buffers['features_of'] = None
-            if buffers['old_gray_of'] is not None:
+            buffers['features_of'] = None # Reset fitur jika terlalu sedikit yang terlacak
+            if buffers['old_gray_of'] is not None: # Hanya tampilkan jika OF pernah aktif
                 cv2.putText(display_config['resp_raw_g'], "OF Track Lost", (10, display_config['graph_height']//2+10),
                           cv2.FONT_HERSHEY_SIMPLEX, 0.4, display_config['graph_text_color'], 1)
-      # RPM calculation and graph drawing
+    
+    # RPM calculation and graph drawing
     buffers['current_rpm'] = 0.0 # Reset for this frame
     if len(buffers['respiration_of_raw_signal_list']) >= buffers['min_frames_for_resp_output']:
         resp_seg_of = np.array(list(buffers['respiration_of_raw_signal_list'])[-buffers['pos_display_buffer_size']:]) # Use consistent display length
-        if len(resp_seg_of) > int(fs*2): 
+        if len(resp_seg_of) > int(fs*2): # Butuh minimal 2 detik data untuk analisis
             # Detren sinyal untuk menghilangkan drift jangka panjang
             det_resp_of = signal.detrend(resp_seg_of)
             
             # Aplikasikan median filter untuk menghilangkan spike noise
-            window_size = int(fs/2)  # 0.5 detik window
-            if window_size % 2 == 0:
-                window_size += 1  # Pastikan window size ganjil
-            med_filt_resp = signal.medfilt(det_resp_of, window_size)
+            # Ukuran window sekitar 0.5 detik, pastikan ganjil
+            window_size_med = int(fs/2) 
+            if window_size_med % 2 == 0: window_size_med += 1
+            if window_size_med < 3: window_size_med = 3 # Minimal window size
+            
+            med_filt_resp = signal.medfilt(det_resp_of, kernel_size=window_size_med)
             
             # Filter sinyal untuk memperoleh sinyal pernafasan
             # Frekuensi pernafasan normal: 0.1 - 0.5 Hz (6-30 respirasi per menit)
@@ -516,35 +541,36 @@ def process_respiration_frame(frame_orig_for_pose_of, pose_landmarker_obj, buffe
                 
                 # Mendeteksi puncak untuk menghitung laju pernapasan
                 # Normalisasi sinyal untuk deteksi puncak yang lebih konsisten
-                norm_sig = (filt_resp_of-np.mean(filt_resp_of))/(np.std(filt_resp_of)+1e-9)
+                norm_sig_resp = (filt_resp_of-np.mean(filt_resp_of))/(np.std(filt_resp_of)+eps)
                 
                 # Hitung adaptive prominence threshold berdasarkan variasi sinyal
-                signal_amplitude = np.abs(norm_sig)
-                adaptive_prominence = np.mean(signal_amplitude) * 0.6  # 60% dari mean amplitude
-                min_prominence = 0.35  # minimum prominence threshold
-                prominence_threshold = max(adaptive_prominence, min_prominence)
+                signal_amplitude_resp = np.abs(norm_sig_resp)
+                adaptive_prominence_resp = np.mean(signal_amplitude_resp) * 0.6  # 60% dari mean amplitude
+                min_prominence_resp = 0.35  # minimum prominence threshold
+                prominence_threshold_resp = max(adaptive_prominence_resp, min_prominence_resp)
                 
                 # Parameter prominence mengontrol seberapa menonjol suatu puncak
                 # Distance memastikan jarak minimum antar puncak sesuai dengan frekuensi pernapasan maksimum
-                peaks_r,_ = signal.find_peaks(norm_sig, 
-                                            prominence=prominence_threshold, 
-                                            distance=fs/(buffers['resp_highcut_hz']*2.5),
-                                            width=(int(fs*0.1), int(fs*2.0)))  # Tambahkan width constraint
+                # Width constraint untuk memastikan puncak tidak terlalu sempit atau lebar
+                peaks_r,_ = signal.find_peaks(norm_sig_resp, 
+                                            prominence=prominence_threshold_resp, 
+                                            distance=fs/(buffers['resp_highcut_hz']*2.5), # Jarak minimal antar puncak
+                                            width=(int(fs*0.1), int(fs*2.0)))  # Lebar puncak (0.1s - 2s)
                 
                 # Hitung respirasi per menit (RPM) dari interval antar puncak
                 if len(peaks_r)>=2: 
                     # Hitung periode antar puncak
-                    peak_intervals = np.diff(peaks_r)/fs  # periode dalam detik
+                    peak_intervals_resp = np.diff(peaks_r)/fs  # periode dalam detik
                     
                     # Apply moving average pada interval untuk stabilitas
-                    window_size = min(len(peak_intervals), 3)  # Use up to 3 last intervals
-                    moving_avg_period = np.convolve(peak_intervals, 
-                                                  np.ones(window_size)/window_size, 
-                                                  mode='valid').mean()
-                    
-                    # Konversi ke RPM dengan batas yang lebih ketat
-                    rpm_raw = 60.0/moving_avg_period
-                    buffers['current_rpm'] = np.clip(rpm_raw, 6, 25)  # Batasi ke range yang lebih realistis
+                    window_size_rpm_avg = min(len(peak_intervals_resp), 3)  # Gunakan hingga 3 interval terakhir
+                    if window_size_rpm_avg > 0:
+                        moving_avg_period_resp = np.convolve(peak_intervals_resp, 
+                                                      np.ones(window_size_rpm_avg)/window_size_rpm_avg, 
+                                                      mode='valid').mean()
+                        if moving_avg_period_resp > eps: # Hindari pembagian dengan nol
+                            rpm_raw = 60.0/moving_avg_period_resp
+                            buffers['current_rpm'] = np.clip(rpm_raw, 6, 25)  # Batasi ke range yang lebih realistis (6-25 RPM)
                 
                 # Visualisasi sinyal yang difilter
                 if len(buffers['respiration_filtered_display_buffer'])>1:
@@ -558,7 +584,9 @@ def process_respiration_frame(frame_orig_for_pose_of, pose_landmarker_obj, buffe
                             cv2.line(display_config['resp_filt_g'],
                                    (i-1,display_config['graph_height']-int(norm_disp[i-1]*display_config['graph_height'])),
                                    (i,display_config['graph_height']-int(norm_disp[i]*display_config['graph_height'])),
-                                   (0,100,0),1)        # Plot sinyal bahu mentah untuk tampilan
+                                   (0,100,0),1)
+        
+        # Plot sinyal bahu mentah untuk tampilan
         if len(buffers['respiration_of_raw_signal_list'])>1:
             data_plot_raw = np.array(list(buffers['respiration_of_raw_signal_list'])[-buffers['pos_display_buffer_size']:])
             min_v,max_v=np.min(data_plot_raw),np.max(data_plot_raw)
@@ -572,24 +600,12 @@ def process_respiration_frame(frame_orig_for_pose_of, pose_landmarker_obj, buffe
                            (i,display_config['graph_height']-int(norm_disp[i]*display_config['graph_height'])),
                            (0,0,255),1)
                 
-                # Tambahkan teks informasi RPM pada grafik
-                if buffers['current_rpm'] > 0:
-                    rpm_text = f"RPM: {buffers['current_rpm']:.1f}"
-                    cv2.putText(display_config['resp_filt_g'], rpm_text,
-                              (display_config['graph_width']-100, 20),
-                              cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,100,0), 1)
+                # Tambahkan teks informasi RPM pada grafik (sudah ada di assemble_and_show_display)
     
     # Tampilkan status jika fitur pelacakan belum siap
-    elif buffers['features_of'] is not None:
-        cv2.putText(display_config['resp_raw_g'], "Collecting Shoulder Movement...",
-                   (10, display_config['graph_height']//2),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, display_config['graph_text_color'], 1)
-    elif buffers['features_of'] is None and buffers['old_gray_of'] is not None:
-        pass
-    else:
-        cv2.putText(display_config['resp_raw_g'], "Waiting Shoulder Detection...",
-                   (10, display_config['graph_height']//2),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, display_config['graph_text_color'], 1)
+    elif buffers['features_of'] is not None : cv2.putText(display_config['resp_raw_g'],"Collecting Shoulder Movement...",(10,display_config['graph_height']//2),cv2.FONT_HERSHEY_SIMPLEX,0.4,display_config['graph_text_color'],1)
+    elif buffers['features_of'] is None and buffers['old_gray_of'] is not None: pass # OF pernah aktif tapi hilang
+    else: cv2.putText(display_config['resp_raw_g'],"Waiting Shoulder Detection...",(10,display_config['graph_height']//2),cv2.FONT_HERSHEY_SIMPLEX,0.4,display_config['graph_text_color'],1)
     
     return buffers['current_rpm'], resized_frame_display
 
@@ -652,6 +668,7 @@ def cleanup_resources(cap, video_writer, pose_landmarker_obj, face_mesh):
 
 def generate_final_plots(buffers, cam_params, display_config):
     fs = cam_params['fs']
+    eps = cam_params['eps']
     # rPPG Plot
     if len(buffers['g_signal_list']) > buffers['min_frames_for_pos_output']:
         print("Plotting final rPPG signals...")
@@ -664,14 +681,32 @@ def generate_final_plots(buffers, cam_params, display_config):
         
         det_pos_full = signal.detrend(final_pos_full)
         nyq,low,high = 0.5*fs, buffers['pos_lowcut_hr']/(0.5*fs), buffers['pos_highcut_hr']/(0.5*fs)
+        avg_bpm_str = "Avg. HR: N/A"
         if low>0 and high <1 and low < high:
             bf,af = signal.butter(buffers['pos_filter_order'], [low,high], btype='band')
             filt_pos_full = signal.filtfilt(bf,af,det_pos_full)
-            plt.subplot(212);plt.plot(times_rppg_full, filt_pos_full, label=f"Filtered POS ({buffers['pos_lowcut_hr']}-{buffers['pos_highcut_hr']}Hz)", color='orange'); plt.title("Filtered POS Signal")
+            
+            # Deteksi puncak untuk menghitung HR rata-rata
+            norm_filt_pos_full = (filt_pos_full-np.mean(filt_pos_full))/(np.std(filt_pos_full)+eps)
+            peaks_hr, _ = signal.find_peaks(norm_filt_pos_full, prominence=0.4, distance=fs/(buffers['pos_highcut_hr']*2.0))
+            
+            plt.subplot(212)
+            plt.plot(times_rppg_full, filt_pos_full, label=f"Filtered POS ({buffers['pos_lowcut_hr']}-{buffers['pos_highcut_hr']}Hz)", color='orange')
+            
+            if len(peaks_hr) > 0:
+                plt.plot(times_rppg_full[peaks_hr], filt_pos_full[peaks_hr], "bx", label="Detected Heartbeats")
+                if len(peaks_hr) >= 2:
+                    avg_hr_val = 60.0 / (np.mean(np.diff(peaks_hr)) / fs)
+                    avg_bpm_str = f"Avg. HR: {avg_hr_val:.1f} BPM"
+            plt.title(f"Filtered POS Signal - {avg_bpm_str}")
         else:
-            plt.subplot(212);plt.plot(times_rppg_full, det_pos_full, label="Detrended POS (Filter Error)", color='red'); plt.title("Detrended POS Signal")
+            plt.subplot(212);plt.plot(times_rppg_full, det_pos_full, label="Detrended POS (Filter Error)", color='red')
+            plt.title(f"Detrended POS Signal - {avg_bpm_str}")
+            
         plt.xlabel("Time (s)"); plt.ylabel("Amplitude"); plt.legend(); plt.grid(True)
-        plt.tight_layout(rect=[0,0,1,0.95]); plt.savefig("final_rppg_plot_webcam.png"); plt.show(block=False)    # Respiration Plot - tracking pergerakan bahu
+        plt.tight_layout(rect=[0,0,1,0.95]); plt.savefig("final_rppg_plot_webcam.png"); plt.show(block=False)
+
+    # Respiration Plot - tracking pergerakan bahu
     if len(buffers['respiration_of_raw_signal_list']) > buffers['min_frames_for_resp_output']:
         print("Plotting final Respiration (Shoulder Movement) signals...")
         final_resp_of_full = np.array(list(buffers['respiration_of_raw_signal_list']))
@@ -691,35 +726,53 @@ def generate_final_plots(buffers, cam_params, display_config):
         
         # Plot sinyal yang difilter
         det_resp_full_of = signal.detrend(final_resp_of_full)
+        
+        # Median filter untuk sinyal respirasi penuh
+        window_size_med_full = int(fs/2) 
+        if window_size_med_full % 2 == 0: window_size_med_full += 1
+        if window_size_med_full < 3: window_size_med_full = 3
+        med_filt_resp_full = signal.medfilt(det_resp_full_of, kernel_size=window_size_med_full)
+
         nyq_r,low_r,high_r = 0.5*fs, buffers['resp_lowcut_hz']/(0.5*fs), buffers['resp_highcut_hz']/(0.5*fs)
+        avg_rpm_str = "Avg. Rate: N/A"
         if low_r>0 and high_r<1 and low_r<high_r:
             br,ar = signal.butter(buffers['resp_filter_order'], [low_r,high_r], btype='band')
-            filt_resp_full_of = signal.filtfilt(br,ar,det_resp_full_of)
+            filt_resp_full_of = signal.filtfilt(br,ar,med_filt_resp_full) # Gunakan hasil median filter
             
             # Deteksi puncak untuk menghitung laju pernapasan rata-rata
-            norm_sig = (filt_resp_full_of-np.mean(filt_resp_full_of))/(np.std(filt_resp_full_of)+1e-9)
-            peaks, _ = signal.find_peaks(norm_sig, prominence=0.35, distance=fs/(buffers['resp_highcut_hz']*2.5))
+            norm_sig_resp_full = (filt_resp_full_of-np.mean(filt_resp_full_of))/(np.std(filt_resp_full_of)+eps)
+            
+            signal_amplitude_resp_full = np.abs(norm_sig_resp_full)
+            adaptive_prominence_resp_full = np.mean(signal_amplitude_resp_full) * 0.6
+            min_prominence_resp_full = 0.35
+            prominence_threshold_resp_full = max(adaptive_prominence_resp_full, min_prominence_resp_full)
+
+            peaks_rpm, _ = signal.find_peaks(norm_sig_resp_full, 
+                                             prominence=prominence_threshold_resp_full, 
+                                             distance=fs/(buffers['resp_highcut_hz']*2.5),
+                                             width=(int(fs*0.1), int(fs*2.0)))
             
             plt.subplot(212)
             plt.plot(times_resp_full, filt_resp_full_of, color='g', 
                    label=f"Filtered Shoulder Movement ({buffers['resp_lowcut_hz']}-{buffers['resp_highcut_hz']}Hz)")
             
-            # Plot puncak yang terdeteksi
-            if len(peaks) > 0:
-                plt.plot(times_resp_full[peaks], filt_resp_full_of[peaks], "rx", label="Detected Breaths")
-                
-                # Hitung dan tampilkan laju pernapasan rata-rata
-                if len(peaks) >= 2:
-                    avg_rpm = 60.0 / (np.mean(np.diff(peaks)) / fs)
-                    plt.title(f"Filtered Respiration Signal - Avg. Rate: {avg_rpm:.1f} breaths/min")
-                else:
-                    plt.title("Filtered Respiration Signal (Shoulder Movement)")
-            else:
-                plt.title("Filtered Respiration Signal (Shoulder Movement)")
+            if len(peaks_rpm) > 0:
+                plt.plot(times_resp_full[peaks_rpm], filt_resp_full_of[peaks_rpm], "rx", label="Detected Breaths")
+                if len(peaks_rpm) >= 2:
+                    peak_intervals_rpm_full = np.diff(peaks_rpm)/fs
+                    window_size_rpm_avg_full = min(len(peak_intervals_rpm_full), 3)
+                    if window_size_rpm_avg_full > 0:
+                        moving_avg_period_rpm_full = np.convolve(peak_intervals_rpm_full,
+                                                              np.ones(window_size_rpm_avg_full)/window_size_rpm_avg_full,
+                                                              mode='valid').mean()
+                        if moving_avg_period_rpm_full > eps:
+                            avg_rpm_val = 60.0 / moving_avg_period_rpm_full
+                            avg_rpm_str = f"Avg. Rate: {avg_rpm_val:.1f} breaths/min"
+            plt.title(f"Filtered Respiration Signal - {avg_rpm_str}")
         else:
             plt.subplot(212)
-            plt.plot(times_resp_full, det_resp_full_of, color='m', label="Detrended Resp (Filter Error)")
-            plt.title("Detrended Respiration Signal (Shoulder Movement)")
+            plt.plot(times_resp_full, det_resp_full_of, color='m', label="Detrended Resp (Filter Error)") # Seharusnya med_filt_resp_full
+            plt.title(f"Detrended Respiration Signal - {avg_rpm_str}")
             
         plt.xlabel("Time (s)")
         plt.ylabel("Amplitude")
