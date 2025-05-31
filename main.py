@@ -284,8 +284,8 @@ def initialize_buffers_and_state(fs):
     
     # Parameter filter dan deteksi respirasi
     # Frekuensi cutoff: 0.1-0.5 Hz sesuai dengan 6-30 respirasi/menit
-    buffers['resp_lowcut_hz']=0.1
-    buffers['resp_highcut_hz']=0.5
+    buffers['resp_lowcut_hz'] = 0.1  # 6 RPM (0.1 Hz)
+    buffers['resp_highcut_hz'] = 0.5  # 30 RPM (0.5 Hz)
     buffers['resp_filter_order']=2
     buffers['min_frames_for_resp_output'] = int(fs*5)
     buffers['current_rpm'] = 0.0
@@ -425,8 +425,7 @@ def process_respiration_frame(frame_orig_for_pose_of, pose_landmarker_obj, buffe
 
     if buffers['features_of'] is not None and buffers['old_gray_of'] is not None:
         frame_gray_of_processing = cv2.cvtColor(frame_for_of_processing, cv2.COLOR_BGR2GRAY)
-        new_features, status, error = cv2.calcOpticalFlowPyrLK(buffers['old_gray_of'], frame_gray_of_processing, 
-                                                              buffers['features_of'], None, **buffers['lk_params_of'])
+        new_features, status, error = cv2.calcOpticalFlowPyrLK(buffers['old_gray_of'], frame_gray_of_processing, buffers['features_of'], None, **buffers['lk_params_of'])
         good_new = []
         if new_features is not None and status is not None:
             good_new = new_features[status.flatten() == 1]
@@ -497,13 +496,19 @@ def process_respiration_frame(frame_orig_for_pose_of, pose_landmarker_obj, buffe
             # Detren sinyal untuk menghilangkan drift jangka panjang
             det_resp_of = signal.detrend(resp_seg_of)
             
+            # Aplikasikan median filter untuk menghilangkan spike noise
+            window_size = int(fs/2)  # 0.5 detik window
+            if window_size % 2 == 0:
+                window_size += 1  # Pastikan window size ganjil
+            med_filt_resp = signal.medfilt(det_resp_of, window_size)
+            
             # Filter sinyal untuk memperoleh sinyal pernafasan
             # Frekuensi pernafasan normal: 0.1 - 0.5 Hz (6-30 respirasi per menit)
             nyq_r,low_r,high_r = 0.5*fs, buffers['resp_lowcut_hz']/(0.5*fs), buffers['resp_highcut_hz']/(0.5*fs)
             if low_r>0 and high_r<1 and low_r<high_r:
                 # Butterworth bandpass filter
                 br,ar = signal.butter(buffers['resp_filter_order'], [low_r,high_r], btype='band')
-                filt_resp_of = signal.filtfilt(br,ar,det_resp_of)
+                filt_resp_of = signal.filtfilt(br,ar,med_filt_resp)  # Gunakan hasil median filter
                 
                 # Menyimpan sinyal yang difilter untuk ditampilkan
                 buffers['respiration_filtered_display_buffer'].clear()
@@ -511,16 +516,35 @@ def process_respiration_frame(frame_orig_for_pose_of, pose_landmarker_obj, buffe
                 
                 # Mendeteksi puncak untuk menghitung laju pernapasan
                 # Normalisasi sinyal untuk deteksi puncak yang lebih konsisten
-                norm_sig = (filt_resp_of-np.mean(filt_resp_of))/(np.std(filt_resp_of)+eps)
+                norm_sig = (filt_resp_of-np.mean(filt_resp_of))/(np.std(filt_resp_of)+1e-9)
+                
+                # Hitung adaptive prominence threshold berdasarkan variasi sinyal
+                signal_amplitude = np.abs(norm_sig)
+                adaptive_prominence = np.mean(signal_amplitude) * 0.6  # 60% dari mean amplitude
+                min_prominence = 0.35  # minimum prominence threshold
+                prominence_threshold = max(adaptive_prominence, min_prominence)
                 
                 # Parameter prominence mengontrol seberapa menonjol suatu puncak
                 # Distance memastikan jarak minimum antar puncak sesuai dengan frekuensi pernapasan maksimum
-                peaks_r,_ = signal.find_peaks(norm_sig, prominence=0.35, distance=fs/(buffers['resp_highcut_hz']*2.5)) 
+                peaks_r,_ = signal.find_peaks(norm_sig, 
+                                            prominence=prominence_threshold, 
+                                            distance=fs/(buffers['resp_highcut_hz']*2.5),
+                                            width=(int(fs*0.1), int(fs*2.0)))  # Tambahkan width constraint
                 
                 # Hitung respirasi per menit (RPM) dari interval antar puncak
                 if len(peaks_r)>=2: 
-                    mean_period = np.mean(np.diff(peaks_r))/fs  # periode rata-rata dalam detik
-                    buffers['current_rpm'] = np.clip(60.0/mean_period, 4, 30)  # konversi ke RPM dan batasi nilai
+                    # Hitung periode antar puncak
+                    peak_intervals = np.diff(peaks_r)/fs  # periode dalam detik
+                    
+                    # Apply moving average pada interval untuk stabilitas
+                    window_size = min(len(peak_intervals), 3)  # Use up to 3 last intervals
+                    moving_avg_period = np.convolve(peak_intervals, 
+                                                  np.ones(window_size)/window_size, 
+                                                  mode='valid').mean()
+                    
+                    # Konversi ke RPM dengan batas yang lebih ketat
+                    rpm_raw = 60.0/moving_avg_period
+                    buffers['current_rpm'] = np.clip(rpm_raw, 6, 25)  # Batasi ke range yang lebih realistis
                 
                 # Visualisasi sinyal yang difilter
                 if len(buffers['respiration_filtered_display_buffer'])>1:
