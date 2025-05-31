@@ -126,4 +126,5 @@ final-project-dsp/
 ## Dosen Pengampu
 - Martin Clinton Tosima Manullang, Ph.D
 
-## Lisensi
+## Lampiran
+[Video Demo](https://youtu.be/fyiFWDtgaNo?si=1I8cUnzYoMx_pq87)
